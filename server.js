@@ -2,7 +2,10 @@ import express from "express";
 import bodyParser from "body-parser";
 import fs from "fs";
 import { WebClient } from "@slack/web-api";
+import { google } from "googleapis";
+import cron from "node-cron";
 
+// Initialize Express
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
@@ -10,20 +13,23 @@ app.use(bodyParser.json());
 // Slack client
 const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 
-// Channel ID environment variable
+// Environment variables
 const HIGHFIVE_CHANNEL = process.env.HIGHFIVE_CHANNEL;
 
-// --------------------
+// Google Sheets setup
+const sheetsCredentials = JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS);
+const auth = new google.auth.GoogleAuth({
+  credentials: sheetsCredentials,
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+const sheetsClient = google.sheets({ version: "v4", auth });
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID; // add your sheet ID here
+
 // Slash command: /highfive
-// --------------------
 app.post("/slack/highfive", async (req, res) => {
   const triggerId = req.body.trigger_id;
 
-  // **Respond immediately** to prevent Slack timeout
-  res.send(""); 
-
   try {
-    // Open the modal asynchronously
     await client.views.open({
       trigger_id: triggerId,
       view: {
@@ -37,7 +43,7 @@ app.post("/slack/highfive", async (req, res) => {
             type: "input",
             block_id: "user_block",
             label: { type: "plain_text", text: "Who are you recognizing?" },
-            element: { type: "users_select", action_id: "user" }
+            element: { type: "users_select", action_id: "user" },
           },
           {
             type: "input",
@@ -51,27 +57,28 @@ app.post("/slack/highfive", async (req, res) => {
                 { text: { type: "plain_text", text: "Team Player" }, value: "team" },
                 { text: { type: "plain_text", text: "Constant Improvement" }, value: "improve" },
                 { text: { type: "plain_text", text: "Forward Thinking" }, value: "forward" },
-                { text: { type: "plain_text", text: "Deliver Performance" }, value: "performance" }
-              ]
-            }
+                { text: { type: "plain_text", text: "Deliver Performance" }, value: "performance" },
+              ],
+            },
           },
           {
             type: "input",
             block_id: "message_block",
             label: { type: "plain_text", text: "Why are you giving this High Five?" },
-            element: { type: "plain_text_input", multiline: true, action_id: "message" }
-          }
-        ]
-      }
+            element: { type: "plain_text_input", multiline: true, action_id: "message" },
+          },
+        ],
+      },
     });
+
+    res.send("");
   } catch (err) {
     console.error("Error opening modal:", err);
+    res.status(500).send("Failed to open modal");
   }
 });
 
-// --------------------
 // Handle modal submissions
-// --------------------
 app.post("/slack/actions", async (req, res) => {
   const payload = JSON.parse(req.body.payload);
 
@@ -81,81 +88,77 @@ app.post("/slack/actions", async (req, res) => {
     const coreValue = payload.view.state.values.value_block.value.selected_option.text.text;
     const message = payload.view.state.values.message_block.message.value;
 
-    // Post High-Five to channel
+    // Post a pretty card to Slack
     await client.chat.postMessage({
       channel: HIGHFIVE_CHANNEL,
-      text: "🙌 High-Five! 🙌",
+      text: `🙌 <@${giver}> sent a High-Five to <@${receiver}>!`,
       blocks: [
-        { type: "section", text: { type: "mrkdwn", text: `*<@${receiver}>* just received a High-Five!` } },
-        { type: "section", text: { type: "mrkdwn", text: `*Core Value:* ${coreValue}\n*Reason:* ${message}` } },
-        { type: "context", elements: [{ type: "mrkdwn", text: `From <@${giver}>` }] }
-      ]
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: `🎉 *<@${receiver}>* just received a High-Five!` },
+        },
+        {
+          type: "section",
+          fields: [
+            { type: "mrkdwn", text: `*Core Value:*\n${coreValue}` },
+            { type: "mrkdwn", text: `*From:*\n<@${giver}>` },
+          ],
+        },
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: `💬 *Reason:*\n${message}` },
+        },
+        {
+          type: "context",
+          elements: [{ type: "mrkdwn", text: ":trophy: Keep up the great work!" }],
+        },
+        { type: "divider" },
+      ],
     });
 
-    // Update hidden leaderboard
+    // Update hidden JSON leaderboard
     let leaderboard = { usersRecognized: {}, usersGave: {} };
     if (fs.existsSync("leaderboard.json")) {
       leaderboard = JSON.parse(fs.readFileSync("leaderboard.json"));
     }
+
     leaderboard.usersRecognized[receiver] = (leaderboard.usersRecognized[receiver] || 0) + 1;
     leaderboard.usersGave[giver] = (leaderboard.usersGave[giver] || 0) + 1;
     fs.writeFileSync("leaderboard.json", JSON.stringify(leaderboard, null, 2));
 
-    res.send(""); // acknowledge Slack
+    // Optional: Update Google Sheet
+    // This writes/updates each user in the sheet
+    for (const [user, count] of Object.entries(leaderboard.usersRecognized)) {
+      await sheetsClient.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `Sheet1!B${parseInt(user)}:B${parseInt(user)}`, // adjust mapping
+        valueInputOption: "RAW",
+        requestBody: { values: [[count]] },
+      });
+    }
+
+    res.send("");
   } catch (err) {
     console.error("Error handling modal submission:", err);
     res.status(500).send("Failed to handle submission");
   }
 });
 
-// --------------------
-// Test route for UptimeRobot
-// --------------------
-app.get("/test-post", async (req, res) => {
-  try {
-    await client.chat.postMessage({
-      channel: HIGHFIVE_CHANNEL,
-      text: "⚡ Test message from High-Five bot (keeps app awake)"
-    });
-    res.send("Test post sent!");
-  } catch (err) {
-    console.error("Error sending test post:", err);
-    res.status(500).send("Failed to send test post");
-  }
-});
-
-// --------------------
-// Start server
-// --------------------
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
-import cron from "node-cron";
-
-// Weekly summary every Monday at 9 AM
+// Weekly leaderboard summary
 cron.schedule("0 9 * * 1", async () => {
   try {
     if (!fs.existsSync("leaderboard.json")) return;
-
     const leaderboard = JSON.parse(fs.readFileSync("leaderboard.json"));
 
-    // Top 3 receivers
     const topReceivers = Object.entries(leaderboard.usersRecognized)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3);
-
-    // Top 3 givers
     const topGivers = Object.entries(leaderboard.usersGave)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3);
 
-    const receiversText = topReceivers
-      .map(([user, count], i) => `${i + 1}. <@${user}> - ${count}`)
-      .join("\n");
-
-    const giversText = topGivers
-      .map(([user, count], i) => `${i + 1}. <@${user}> - ${count}`)
-      .join("\n");
+    const receiversText = topReceivers.map(([user, count], i) => `${i +1}. <@${user}> - ${count}`).join("\n");
+    const giversText = topGivers.map(([user, count], i) => `${i +1}. <@${user}> - ${count}`).join("\n");
 
     await client.chat.postMessage({
       channel: HIGHFIVE_CHANNEL,
@@ -173,5 +176,6 @@ cron.schedule("0 9 * * 1", async () => {
 });
 
 // Start server
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
