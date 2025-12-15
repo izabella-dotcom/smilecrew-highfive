@@ -130,6 +130,48 @@ app.get("/test-post", async (req, res) => {
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
+import cron from "node-cron";
+
+// Weekly summary every Monday at 9 AM
+cron.schedule("0 9 * * 1", async () => {
+  try {
+    if (!fs.existsSync("leaderboard.json")) return;
+
+    const leaderboard = JSON.parse(fs.readFileSync("leaderboard.json"));
+
+    // Top 3 receivers
+    const topReceivers = Object.entries(leaderboard.usersRecognized)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+
+    // Top 3 givers
+    const topGivers = Object.entries(leaderboard.usersGave)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+
+    const receiversText = topReceivers
+      .map(([user, count], i) => `${i + 1}. <@${user}> - ${count}`)
+      .join("\n");
+
+    const giversText = topGivers
+      .map(([user, count], i) => `${i + 1}. <@${user}> - ${count}`)
+      .join("\n");
+
+    await client.chat.postMessage({
+      channel: HIGHFIVE_CHANNEL,
+      text: "🏆 Weekly High-Five Leaders 🏆",
+      blocks: [
+        { type: "header", text: { type: "plain_text", text: "🏆 Weekly High-Five Leaders 🏆" } },
+        { type: "section", text: { type: "mrkdwn", text: "*Top Receivers:*\n" + receiversText } },
+        { type: "section", text: { type: "mrkdwn", text: "*Top Givers:*\n" + giversText } },
+        { type: "divider" }
+      ]
+    });
+  } catch (err) {
+    console.error("Error sending weekly summary:", err);
+  }
+});
+
 // Start server
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
