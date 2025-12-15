@@ -7,18 +7,14 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// Initialize Slack client with bot token
 const client = new WebClient(process.env.SLACK_BOT_TOKEN);
-
-// Environment variable for channel ID
-const HIGHFIVE_CHANNEL = process.env.HIGHFIVE_CHANNEL;
+const HIGHFIVE_CHANNEL = process.env.HIGHFIVE_CHANNEL; // Make sure this is C0A42PE9MEC
 
 // Slash command: /highfive
 app.post("/slack/highfive", async (req, res) => {
   const triggerId = req.body.trigger_id;
 
   try {
-    // Open modal
     await client.views.open({
       trigger_id: triggerId,
       view: {
@@ -77,7 +73,7 @@ app.post("/slack/actions", async (req, res) => {
     const coreValue = payload.view.state.values.value_block.value.selected_option.text.text;
     const message = payload.view.state.values.message_block.message.value;
 
-    // Post High-Five to public channel (works even if bot isn't a member)
+    // Post High-Five to public channel reliably
     await client.chat.postMessage({
       channel: HIGHFIVE_CHANNEL,
       text: `🙌 High-Five! 🙌`,
@@ -88,16 +84,16 @@ app.post("/slack/actions", async (req, res) => {
       ]
     });
 
-    // Update hidden leaderboard
+    // Update hidden leaderboard JSON
+    const leaderboardPath = "./leaderboard.json";
     let leaderboard = { usersRecognized: {}, usersGave: {} };
-    if (fs.existsSync("leaderboard.json")) {
-      leaderboard = JSON.parse(fs.readFileSync("leaderboard.json"));
+    if (fs.existsSync(leaderboardPath)) {
+      leaderboard = JSON.parse(fs.readFileSync(leaderboardPath));
     }
 
     leaderboard.usersRecognized[receiver] = (leaderboard.usersRecognized[receiver] || 0) + 1;
     leaderboard.usersGave[giver] = (leaderboard.usersGave[giver] || 0) + 1;
-
-    fs.writeFileSync("leaderboard.json", JSON.stringify(leaderboard, null, 2));
+    fs.writeFileSync(leaderboardPath, JSON.stringify(leaderboard, null, 2));
 
     res.send(""); // acknowledge Slack
   } catch (err) {
@@ -106,6 +102,5 @@ app.post("/slack/actions", async (req, res) => {
   }
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
