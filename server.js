@@ -10,14 +10,20 @@ app.use(bodyParser.json());
 // Slack client
 const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 
-// Channel ID from environment variable
+// Channel ID environment variable
 const HIGHFIVE_CHANNEL = process.env.HIGHFIVE_CHANNEL;
 
+// --------------------
 // Slash command: /highfive
+// --------------------
 app.post("/slack/highfive", async (req, res) => {
   const triggerId = req.body.trigger_id;
 
+  // **Respond immediately** to prevent Slack timeout
+  res.send(""); 
+
   try {
+    // Open the modal asynchronously
     await client.views.open({
       trigger_id: triggerId,
       view: {
@@ -58,15 +64,14 @@ app.post("/slack/highfive", async (req, res) => {
         ]
       }
     });
-
-    res.send(""); // acknowledge immediately
   } catch (err) {
     console.error("Error opening modal:", err);
-    res.status(500).send("Failed to open modal");
   }
 });
 
-// Modal submission handler
+// --------------------
+// Handle modal submissions
+// --------------------
 app.post("/slack/actions", async (req, res) => {
   const payload = JSON.parse(req.body.payload);
 
@@ -76,10 +81,10 @@ app.post("/slack/actions", async (req, res) => {
     const coreValue = payload.view.state.values.value_block.value.selected_option.text.text;
     const message = payload.view.state.values.message_block.message.value;
 
-    // Post High-Five to the channel
+    // Post High-Five to channel
     await client.chat.postMessage({
       channel: HIGHFIVE_CHANNEL,
-      text: `🙌 High-Five! 🙌`,
+      text: "🙌 High-Five! 🙌",
       blocks: [
         { type: "section", text: { type: "mrkdwn", text: `*<@${receiver}>* just received a High-Five!` } },
         { type: "section", text: { type: "mrkdwn", text: `*Core Value:* ${coreValue}\n*Reason:* ${message}` } },
@@ -87,7 +92,7 @@ app.post("/slack/actions", async (req, res) => {
       ]
     });
 
-    // Update leaderboard
+    // Update hidden leaderboard
     let leaderboard = { usersRecognized: {}, usersGave: {} };
     if (fs.existsSync("leaderboard.json")) {
       leaderboard = JSON.parse(fs.readFileSync("leaderboard.json"));
@@ -103,19 +108,27 @@ app.post("/slack/actions", async (req, res) => {
   }
 });
 
-// Test route to verify bot can post to channel
+// --------------------
+// Test route for UptimeRobot
+// --------------------
 app.get("/test-post", async (req, res) => {
   try {
     await client.chat.postMessage({
       channel: HIGHFIVE_CHANNEL,
-      text: "✅ Test message from High-Five bot"
+      text: "⚡ Test message from High-Five bot (keeps app awake)"
     });
-    res.send("Test message sent!");
+    res.send("Test post sent!");
   } catch (err) {
-    console.error("Error sending test message:", err);
-    res.status(500).send("Failed to send test message");
+    console.error("Error sending test post:", err);
+    res.status(500).send("Failed to send test post");
   }
 });
+
+// --------------------
+// Start server
+// --------------------
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // Start server
 const PORT = process.env.PORT || 10000;
