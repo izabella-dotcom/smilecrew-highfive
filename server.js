@@ -10,6 +10,12 @@ app.use(bodyParser.json());
 // Initialize Slack client
 const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 
+// Your Slack channel ID for High-Fives and leaderboard
+const HIGHFIVE_CHANNEL = "C0A42PE9MEC";
+
+// Your Slack user ID for admin-only leaderboard
+const ADMIN_USER_ID = "U07KQJYA7F0";
+
 // -------------------------
 // Slash command: /highfive
 // -------------------------
@@ -81,9 +87,9 @@ app.post("/slack/actions", async (req, res) => {
     const coreValue = payload.view.state.values.value_block.value.selected_option.text.text;
     const message = payload.view.state.values.message_block.message.value;
 
-    // Post High-Five in #high-fives channel
+    // Post High-Five in your channel
     await client.chat.postMessage({
-      channel: "#high-fives",
+      channel: HIGHFIVE_CHANNEL,
       text: "🙌 High-Five! 🙌",
       blocks: [
         { type: "section", text: { type: "mrkdwn", text: `*<@${receiver}>* just received a High-Five!` } },
@@ -110,15 +116,13 @@ app.post("/slack/actions", async (req, res) => {
 // -------------------------
 // Admin-only leaderboard
 // -------------------------
-const allowedAdmins = ["YOUR_SLACK_USER_ID"]; // Replace with your Slack ID
-
 app.post("/slack/leaderboard", async (req, res) => {
   const userId = req.body.user_id;
 
   // Respond immediately
   res.status(200).send();
 
-  if (!allowedAdmins.includes(userId)) return; // restrict to admins
+  if (userId !== ADMIN_USER_ID) return; // restrict to admin
 
   try {
     let leaderboard = { usersRecognized: {}, usersGave: {} };
@@ -138,9 +142,8 @@ app.post("/slack/leaderboard", async (req, res) => {
       blocks.push({ type: "section", text: { type: "mrkdwn", text: `<@${user}>: ${count}` } });
     }
 
-    await client.chat.postEphemeral({
-      channel: req.body.channel_id,
-      user: userId,
+    await client.chat.postMessage({
+      channel: HIGHFIVE_CHANNEL,
       text: "High-Five Leaderboard",
       blocks
     });
