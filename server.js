@@ -1,35 +1,35 @@
 import express from "express";
 import bodyParser from "body-parser";
-import { google } from "googleapis";
+import fs from "fs";
 import { WebClient } from "@slack/web-api";
+import { google } from "googleapis";
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// Slack client
-const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
+// --- Slack Setup ---
+const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 const HIGHFIVE_CHANNEL = process.env.HIGHFIVE_CHANNEL;
 
-// Google Sheets setup
-const sheets = google.sheets("v4");
-const SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
-const credentials = JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS);
-const auth = new google.auth.JWT(
-  credentials.client_email,
-  null,
-  credentials.private_key,
-  SCOPES
-);
+// --- Google Sheets Setup ---
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SHEET_NAME = "Leader Board"; // exact tab name
+const SHEET_NAME = "Leader Board";
 
-// Slash command: /highfive
+// Parse JSON string from environment variable
+const creds = JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS);
+const auth = new google.auth.GoogleAuth({
+  credentials: creds,
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+const sheets = google.sheets({ version: "v4", auth });
+
+// --- Slash Command: /highfive ---
 app.post("/slack/highfive", async (req, res) => {
   const triggerId = req.body.trigger_id;
 
   try {
-    await slack.views.open({
+    await client.views.open({
       trigger_id: triggerId,
       view: {
         type: "modal",
@@ -42,7 +42,7 @@ app.post("/slack/highfive", async (req, res) => {
             type: "input",
             block_id: "user_block",
             label: { type: "plain_text", text: "Who are you recognizing?" },
-            element: { type: "users_select", action_id: "user" }
+            element: { type: "users_select", action_id: "user" },
           },
           {
             type: "input",
@@ -56,60 +56,71 @@ app.post("/slack/highfive", async (req, res) => {
                 { text: { type: "plain_text", text: "Team Player" }, value: "team" },
                 { text: { type: "plain_text", text: "Constant Improvement" }, value: "improve" },
                 { text: { type: "plain_text", text: "Forward Thinking" }, value: "forward" },
-                { text: { type: "plain_text", text: "Deliver Performance" }, value: "performance" }
-              ]
-            }
+                { text: { type: "plain_text", text: "Deliver Performance" }, value: "performance" },
+              ],
+            },
           },
           {
             type: "input",
             block_id: "message_block",
             label: { type: "plain_text", text: "Why are you giving this High Five?" },
-            element: { type: "plain_text_input", multiline: true, action_id: "message" }
-          }
-        ]
-      }
+            element: { type: "plain_text_input", multiline: true, action_id: "message" },
+          },
+        ],
+      },
     });
 
-    res.send(""); // acknowledge
+    res.send(""); // acknowledge Slack
   } catch (err) {
     console.error("Error opening modal:", err);
     res.status(500).send("Failed to open modal");
   }
 });
 
-// Handle modal submissions
+// --- Handle Modal Submission ---
 app.post("/slack/actions", async (req, res) => {
   const payload = JSON.parse(req.body.payload);
 
   try {
-    const giverId = payload.user.id;
-    const receiverId = payload.view.state.values.user_block.user.selected_user;
+    const giver = payload.user.id;
+    const receiver = payload.view.state.values.user_block.user.selected_user;
     const coreValue = payload.view.state.values.value_block.value.selected_option.text.text;
     const message = payload.view.state.values.message_block.message.value;
 
-    // Post pretty card to Slack
-    await slack.chat.postMessage({
+    // --- Post to Slack ---
+    await client.chat.postMessage({
       channel: HIGHFIVE_CHANNEL,
-      text: "🙌 High-Five! 🙌",
+      text: `🙌 High-Five! 🙌`,
       blocks: [
-        { type: "section", text: { type: "mrkdwn", text: `*<@${receiverId}>* just received a High-Five!` } },
+        { type: "section", text: { type: "mrkdwn", text: `*<@${receiver}>* just received a High-Five!` } },
         { type: "section", text: { type: "mrkdwn", text: `*Core Value:* ${coreValue}\n*Reason:* ${message}` } },
-        { type: "context", elements: [{ type: "mrkdwn", text: `From <@${giverId}>` }] }
-      ]
+        { type: "context", elements: [{ type: "mrkdwn", text: `From <@${giver}>` }] },
+      ],
     });
 
-    // Append to Google Sheets
-    const timestamp = new Date().toISOString();
-    const sheetsValues = [
-      [timestamp, giverId, `<@${giverId}>`, receiverId, `<@${receiverId}>`, coreValue, message]
-    ];
-    await sheets.spreadsheets.values.append({
-      auth,
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:G`,
-      valueInputOption: "RAW",
-      resource: { values: sheetsValues }
-    });
+    // --- Update Local Leaderboard JSON ---
+    let leaderboard = { usersRecognized: {}, usersGave: {} };
+    if (fs.existsSync("leaderboard.json")) {
+      leaderboard = JSON.parse(fs.readFileSync("leaderboard.json"));
+    }
+    leaderboard.usersRecognized[receiver] = (leaderboard.usersRecognized[receiver] || 0) + 1;
+    leaderboard.usersGave[giver] = (leaderboard.usersGave[giver] || 0) + 1;
+    fs.writeFileSync("leaderboard.json", JSON.stringify(leaderboard, null, 2));
+
+    // --- Update Google Sheet ---
+    try {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${SHEET_NAME}!A:E`,
+        valueInputOption: "RAW",
+        resource: {
+          values: [[new Date().toISOString(), giver, receiver, coreValue, message]],
+        },
+      });
+      console.log("Google Sheet updated successfully!");
+    } catch (sheetErr) {
+      console.error("Error updating Google Sheet:", sheetErr);
+    }
 
     res.send(""); // acknowledge Slack
   } catch (err) {
@@ -118,58 +129,9 @@ app.post("/slack/actions", async (req, res) => {
   }
 });
 
-// Slash command: /highfive-leaderboard
-app.post("/slack/highfive-leaderboard", async (req, res) => {
-  try {
-    // Read all rows
-    const response = await sheets.spreadsheets.values.get({
-      auth,
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A:G`
-    });
-
-    const rows = response.data.values || [];
-    if (rows.length < 2) {
-      return res.send("No High-Fives recorded yet.");
-    }
-
-    // Compute top receivers & givers
-    const receivers = {};
-    const givers = {};
-    for (let i = 1; i < rows.length; i++) {
-      const [ , giverId, giverName, receiverId, receiverName, coreValue ] = rows[i];
-      receivers[receiverName] = (receivers[receiverName] || 0) + 1;
-      givers[giverName] = (givers[giverName] || 0) + 1;
-    }
-
-    const sortTop = obj => Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,3);
-    const topReceivers = sortTop(receivers);
-    const topGivers = sortTop(givers);
-
-    // Build Slack message
-    const blocks = [
-      { type: "header", text: { type: "plain_text", text: "🏆 High-Five Leaderboard" } },
-      { type: "section", text: { type: "mrkdwn", text: "*Top Receivers:*" } },
-      ...topReceivers.map(([name,count],i)=>({
-        type: "section",
-        text: { type: "mrkdwn", text: `${i+1}. ${name} — ${count}` }
-      })),
-      { type: "section", text: { type: "mrkdwn", text: "*Top Givers:*" } },
-      ...topGivers.map(([name,count],i)=>({
-        type: "section",
-        text: { type: "mrkdwn", text: `${i+1}. ${name} — ${count}` }
-      }))
-    ];
-
-    // Post to Slack
-    await slack.chat.postMessage({ channel: HIGHFIVE_CHANNEL, blocks });
-
-    res.send(""); // acknowledge
-  } catch (err) {
-    console.error("Error posting leaderboard:", err);
-    res.status(500).send("Failed to post leaderboard");
-  }
-});
+// --- Start Server ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // Start server
 const PORT = process.env.PORT || 3000;
