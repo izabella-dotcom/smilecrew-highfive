@@ -7,7 +7,7 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// Initialize Slack SDK client
+// Initialize Slack client
 const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 
 // -------------------------
@@ -16,10 +16,10 @@ const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 app.post("/slack/highfive", async (req, res) => {
   const triggerId = req.body.trigger_id;
 
-  // Step 1: Respond immediately to Slack (prevents dispatch_failed)
+  // Respond immediately to Slack to prevent dispatch_failed
   res.status(200).send();
 
-  // Step 2: Open modal asynchronously
+  // Open modal asynchronously
   try {
     await client.views.open({
       trigger_id: triggerId,
@@ -67,12 +67,12 @@ app.post("/slack/highfive", async (req, res) => {
 });
 
 // ----------------------------------
-// Handle modal submissions (/slack/actions)
+// Handle modal submissions
 // ----------------------------------
 app.post("/slack/actions", async (req, res) => {
   const payload = JSON.parse(req.body.payload);
 
-  // Respond immediately to Slack
+  // Respond immediately
   res.status(200).send();
 
   try {
@@ -81,27 +81,18 @@ app.post("/slack/actions", async (req, res) => {
     const coreValue = payload.view.state.values.value_block.value.selected_option.text.text;
     const message = payload.view.state.values.message_block.message.value;
 
-    // Post High-Five card in #high-fives channel
+    // Post High-Five in #high-fives channel
     await client.chat.postMessage({
       channel: "#high-fives",
       text: "🙌 High-Five! 🙌",
       blocks: [
-        {
-          type: "section",
-          text: { type: "mrkdwn", text: `*<@${receiver}>* just received a High-Five!` }
-        },
-        {
-          type: "section",
-          text: { type: "mrkdwn", text: `*Core Value:* ${coreValue}\n*Reason:* ${message}` }
-        },
-        {
-          type: "context",
-          elements: [{ type: "mrkdwn", text: `From <@${giver}>` }]
-        }
+        { type: "section", text: { type: "mrkdwn", text: `*<@${receiver}>* just received a High-Five!` } },
+        { type: "section", text: { type: "mrkdwn", text: `*Core Value:* ${coreValue}\n*Reason:* ${message}` } },
+        { type: "context", elements: [{ type: "mrkdwn", text: `From <@${giver}>` }] }
       ]
     });
 
-    // Update leaderboard JSON file (hidden)
+    // Update hidden leaderboard
     let leaderboard = { usersRecognized: {}, usersGave: {} };
     if (fs.existsSync("leaderboard.json")) {
       leaderboard = JSON.parse(fs.readFileSync("leaderboard.json"));
@@ -113,6 +104,48 @@ app.post("/slack/actions", async (req, res) => {
     fs.writeFileSync("leaderboard.json", JSON.stringify(leaderboard, null, 2));
   } catch (err) {
     console.error("Error handling modal submission:", err);
+  }
+});
+
+// -------------------------
+// Admin-only leaderboard
+// -------------------------
+const allowedAdmins = ["YOUR_SLACK_USER_ID"]; // Replace with your Slack ID
+
+app.post("/slack/leaderboard", async (req, res) => {
+  const userId = req.body.user_id;
+
+  // Respond immediately
+  res.status(200).send();
+
+  if (!allowedAdmins.includes(userId)) return; // restrict to admins
+
+  try {
+    let leaderboard = { usersRecognized: {}, usersGave: {} };
+    if (fs.existsSync("leaderboard.json")) {
+      leaderboard = JSON.parse(fs.readFileSync("leaderboard.json"));
+    }
+
+    const blocks = [];
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: "*Leaderboard — Users Recognized*" } });
+    for (const [user, count] of Object.entries(leaderboard.usersRecognized)) {
+      blocks.push({ type: "section", text: { type: "mrkdwn", text: `<@${user}>: ${count}` } });
+    }
+
+    blocks.push({ type: "divider" });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: "*Leaderboard — Users Gave*" } });
+    for (const [user, count] of Object.entries(leaderboard.usersGave)) {
+      blocks.push({ type: "section", text: { type: "mrkdwn", text: `<@${user}>: ${count}` } });
+    }
+
+    await client.chat.postEphemeral({
+      channel: req.body.channel_id,
+      user: userId,
+      text: "High-Five Leaderboard",
+      blocks
+    });
+  } catch (err) {
+    console.error("Error fetching leaderboard:", err);
   }
 });
 
