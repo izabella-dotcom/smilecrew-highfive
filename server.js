@@ -1,6 +1,5 @@
 import express from "express";
 import bodyParser from "body-parser";
-import fs from "fs";
 import fetch from "node-fetch";
 import { WebClient } from "@slack/web-api";
 
@@ -12,18 +11,18 @@ app.use(bodyParser.json());
 const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 const HIGHFIVE_CHANNEL = process.env.HIGHFIVE_CHANNEL;
 
-// --- Google Sheets webhook ---
+// --- Google Sheets webhook (Apps Script Web App URL) ---
 const GOOGLE_SHEETS_WEBHOOK = process.env.GOOGLE_SHEETS_WEBHOOK;
 
 // --- Slash command: /highfive ---
 app.post("/slack/highfive", async (req, res) => {
+  // 1️⃣ Respond immediately to Slack to avoid dispatch_failed
+  res.status(200).send(""); // must be instant
+
   const triggerId = req.body.trigger_id;
 
-  // 1️⃣ Immediately acknowledge Slack to prevent dispatch_failed
-  res.send(""); // Slack sees 200 OK instantly
-
-  // 2️⃣ Open modal asynchronously
   try {
+    // 2️⃣ Open Slack modal
     await client.views.open({
       trigger_id: triggerId,
       view: {
@@ -71,6 +70,7 @@ app.post("/slack/highfive", async (req, res) => {
 
 // --- Handle modal submissions ---
 app.post("/slack/actions", async (req, res) => {
+  res.status(200).send(""); // must respond instantly to Slack
   const payload = JSON.parse(req.body.payload);
 
   try {
@@ -79,7 +79,7 @@ app.post("/slack/actions", async (req, res) => {
     const coreValue = payload.view.state.values.value_block.value.selected_option.text.text;
     const message = payload.view.state.values.message_block.message.value;
 
-    // --- Slack fun card ---
+    // --- Post to Slack channel ---
     const coreValueEmojiMap = {
       "Positive Energy": ":zap:",
       "Team Player": ":handshake:",
@@ -89,8 +89,7 @@ app.post("/slack/actions", async (req, res) => {
     };
     const coreEmoji = coreValueEmojiMap[coreValue] || "";
 
-    // Post message in Slack asynchronously
-    client.chat.postMessage({
+    await client.chat.postMessage({
       channel: HIGHFIVE_CHANNEL,
       text: "🙌 High-Five Alert! 🙌",
       blocks: [
@@ -99,35 +98,23 @@ app.post("/slack/actions", async (req, res) => {
         { type: "context", elements: [{ type: "mrkdwn", text: `From <@${giver}>` }] },
         { type: "section", text: { type: "mrkdwn", text: ":tada: Keep spreading positivity and recognizing your teammates! :tada:" } }
       ]
-    }).catch(err => console.error("Slack postMessage error:", err));
+    });
 
-    // --- Update hidden JSON leaderboard ---
-    let leaderboard = { usersRecognized: {}, usersGave: {} };
-    if (fs.existsSync("leaderboard.json")) {
-      leaderboard = JSON.parse(fs.readFileSync("leaderboard.json"));
-    }
-    leaderboard.usersRecognized[receiver] = (leaderboard.usersRecognized[receiver] || 0) + 1;
-    leaderboard.usersGave[giver] = (leaderboard.usersGave[giver] || 0) + 1;
-    fs.writeFileSync("leaderboard.json", JSON.stringify(leaderboard, null, 2));
-
-    // --- Send data to Google Sheets asynchronously ---
+    // --- Log to Google Sheets ---
     if (GOOGLE_SHEETS_WEBHOOK) {
-      fetch(GOOGLE_SHEETS_WEBHOOK, {
+      await fetch(GOOGLE_SHEETS_WEBHOOK, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ giver, receiver, coreValue, message })
-      })
-      .then(r => r.text())
-      .then(text => console.log("Google Sheet response:", text))
-      .catch(err => console.error("Google Sheets webhook error:", err));
+        body: JSON.stringify({ senderId: giver, recipientId: receiver, coreValue, message })
+      });
     }
-
-    res.send(""); // acknowledge Slack modal submission
   } catch (err) {
     console.error("Error handling modal submission:", err);
-    res.status(500).send("Failed to handle submission");
   }
 });
+
+// --- Health check ---
+app.get("/", (req, res) => res.send("OK"));
 
 // --- Start server ---
 const PORT = process.env.PORT || 10000;
