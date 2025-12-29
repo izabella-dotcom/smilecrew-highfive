@@ -19,6 +19,10 @@ const GOOGLE_SHEETS_WEBHOOK = process.env.GOOGLE_SHEETS_WEBHOOK;
 app.post("/slack/highfive", async (req, res) => {
   const triggerId = req.body.trigger_id;
 
+  // 1️⃣ Immediately acknowledge Slack to prevent dispatch_failed
+  res.send(""); // Slack sees 200 OK instantly
+
+  // 2️⃣ Open modal asynchronously
   try {
     await client.views.open({
       trigger_id: triggerId,
@@ -60,11 +64,8 @@ app.post("/slack/highfive", async (req, res) => {
         ]
       }
     });
-
-    res.send(""); // acknowledge slash command
   } catch (err) {
     console.error("Error opening modal:", err);
-    res.status(500).send("Failed to open modal");
   }
 });
 
@@ -88,7 +89,8 @@ app.post("/slack/actions", async (req, res) => {
     };
     const coreEmoji = coreValueEmojiMap[coreValue] || "";
 
-    await client.chat.postMessage({
+    // Post message in Slack asynchronously
+    client.chat.postMessage({
       channel: HIGHFIVE_CHANNEL,
       text: "🙌 High-Five Alert! 🙌",
       blocks: [
@@ -97,7 +99,7 @@ app.post("/slack/actions", async (req, res) => {
         { type: "context", elements: [{ type: "mrkdwn", text: `From <@${giver}>` }] },
         { type: "section", text: { type: "mrkdwn", text: ":tada: Keep spreading positivity and recognizing your teammates! :tada:" } }
       ]
-    });
+    }).catch(err => console.error("Slack postMessage error:", err));
 
     // --- Update hidden JSON leaderboard ---
     let leaderboard = { usersRecognized: {}, usersGave: {} };
@@ -108,18 +110,19 @@ app.post("/slack/actions", async (req, res) => {
     leaderboard.usersGave[giver] = (leaderboard.usersGave[giver] || 0) + 1;
     fs.writeFileSync("leaderboard.json", JSON.stringify(leaderboard, null, 2));
 
-    // --- Send data to Google Sheets ---
+    // --- Send data to Google Sheets asynchronously ---
     if (GOOGLE_SHEETS_WEBHOOK) {
-      const sheetResponse = await fetch(GOOGLE_SHEETS_WEBHOOK, {
+      fetch(GOOGLE_SHEETS_WEBHOOK, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ giver, receiver, coreValue, message })
-      });
-      const sheetResult = await sheetResponse.text();
-      console.log("Google Sheet response:", sheetResult);
+      })
+      .then(r => r.text())
+      .then(text => console.log("Google Sheet response:", text))
+      .catch(err => console.error("Google Sheets webhook error:", err));
     }
 
-    res.send(""); // acknowledge Slack
+    res.send(""); // acknowledge Slack modal submission
   } catch (err) {
     console.error("Error handling modal submission:", err);
     res.status(500).send("Failed to handle submission");
@@ -129,4 +132,3 @@ app.post("/slack/actions", async (req, res) => {
 // --- Start server ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
